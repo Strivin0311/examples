@@ -21,9 +21,10 @@ export MASTER_PORT=${MASTER_PORT:-16988}
 
 NUM_PROCS=8
 
-CMD="mpirun --allow-run-as-root -np $NUM_PROCS ./dist-mnist > dist-mnist.log 2>&1"
+CMD="mpirun --allow-run-as-root -np $NUM_PROCS ./dist-mnist"
 
-$CMD
+# uncomment the following two lines if you want to run in profile mode
+$CMD > dist-mnist.log 2>&1
 exit
 
 # --- profile dist-mnist --- #
@@ -32,4 +33,4 @@ nsys profile \
     --force-overwrite true \
     -o dist-mnist.nsys-rep \
     --capture-range=cudaProfilerApi \
-    $CMD
+    $CMD > dist-mnist.log 2>&1
