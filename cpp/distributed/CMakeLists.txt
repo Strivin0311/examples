@@ -18,6 +18,7 @@ if (DOWNLOAD_MNIST)
 endif()
 
 add_definitions(-DUSE_C10D_MPI)
+add_definitions(-DUSE_C10D_NCCL)
 
 include_directories(SYSTEM ${MPI_C_INCLUDE_PATH} ${MPI_CXX_INCLUDE_PATH})
 

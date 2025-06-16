@@ -5,16 +5,38 @@
 #define USE_C10D_MPI
 #endif
 
+#ifndef USE_C10D_NCCL
+#define USE_C10D_NCCL
+#endif
+
 #include <iostream>
 #include <string>
 
 #include <torch/csrc/distributed/c10d/Work.hpp>
+#include <torch/csrc/distributed/c10d/TCPStore.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupMPI.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
 #include <torch/torch.h>
 
 #include <cuda_profiler_api.h>
 #include "nvtx3/nvToolsExt.h"
+
+#include "mpi.h"
+#include "nccl.h"
+
+#define USE_NCCL_AS_COMM_BACKEND
+
+#define MPI_CHECK(cmd)                                                   \
+  do {                                                                   \
+    int mpiStatus = cmd;                                                 \
+    if (mpiStatus != MPI_SUCCESS) {                                      \
+      std::string err = "MPI error in: " + std::string(__FILE__) + ":" + \
+          std::to_string(__LINE__) +                                     \
+          ", with error code: " + std::to_string(mpiStatus);             \
+      TORCH_CHECK(false, err);                                           \
+    }                                                                    \
+  } while (0)
 
 // Define a Convolutional Module
 struct ModelImpl : torch::nn::Module {
@@ -52,33 +74,100 @@ struct ModelImpl : torch::nn::Module {
 // see: https://docs.pytorch.org/tutorials/advanced/cpp_frontend.html
 TORCH_MODULE(Model);
 
+template <typename ProcessGroupBackend>
 void waitWork(
-    c10::intrusive_ptr<c10d::ProcessGroupMPI> pg,
+    c10::intrusive_ptr<ProcessGroupBackend> pg,
     std::vector<c10::intrusive_ptr<c10d::Work>> works) {
   for (auto& work : works) {
     try {
       work->wait();
     } catch (const std::exception& ex) {
-      std::cerr << "Exception received: " << ex.what() << std::endl;
+      std::cerr << "ProcessGroup Exception received: " << ex.what() << std::endl;
       pg->abort();
     }
   }
 }
 
-int main(int argc, char* argv[]) {
-  // Creating MPI Process Group
-  auto pg = c10d::ProcessGroupMPI::createProcessGroupMPI();
 
-  // Retrieving MPI environment variables
-  auto numranks = pg->getSize();
+c10::intrusive_ptr<c10d::ProcessGroupNCCL> createProcessGroupNCCLWithMPI(int argc, char* argv[]) {
+  // Initialize MPI explicitly
+  int rank, num_ranks;
+  MPI_CHECK(MPI_Init(&argc, &argv));
+  MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
+  MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &num_ranks));
+  std::cout << "[Rank " << rank << "] " << "MPI initialized for NCCL" << std::endl;
+
+  // Init store
+  std::string host_addr(getenv("MASTER_ADDR"));
+  c10d::TCPStoreOptions store_options = {
+    .port=(std::uint16_t)std::stoi(getenv("MASTER_PORT")),
+    /** NOTE: this determines the only master rank, 
+     * which is required, otherwise the initialization will hang
+     */
+    .isServer=rank == 0,
+  };
+  c10::intrusive_ptr<c10d::TCPStore> store = c10::make_intrusive<c10d::TCPStore>(host_addr, store_options);
+
+  // Init nccl process group ptr
+  return c10::make_intrusive<c10d::ProcessGroupNCCL>(store, rank, num_ranks);
+}
+
+
+void printMainArgs(int argc, char* argv[]) {
+  std::cout << "Printing main arguments: " << std::endl;
+  std::cout << "Number of arguments: " << argc << std::endl;
+  std::cout << "Arguments:" << std::endl;
+
+  for (int i = 0; i < argc; ++i) {
+      std::cout << "argv[" << i << "]: " << argv[i] << std::endl;
+  } std::cout << std::endl;
+}
+
+
+void printDistEnvVars() {
+  std::cout << "Printing dist-environment variables: " << std::endl;
+  std::cout << "MASTER_ADDR: " << getenv("MASTER_ADDR") << std::endl;
+  std::cout << "MASTER_PORT: " << getenv("MASTER_PORT") << std::endl;
+  std::cout << std::endl;
+}
+
+
+void printProcessGroupBackend() {
+  std::cout << "Printing process group backend: ";
+  #ifdef USE_NCCL_AS_COMM_BACKEND
+  std::cout << "NCCL" << std::endl;
+  #else
+  std::cout << "MPI" << std::endl;
+  #endif
+  std::cout << std::endl;
+}
+
+
+int main(int argc, char* argv[]) {
+  // Print main arguments and dist-environment variables
+  printMainArgs(argc, argv);
+  printDistEnvVars();
+  printProcessGroupBackend();
+
+  // Creating Process Group
+  #ifdef USE_NCCL_AS_COMM_BACKEND
+    auto pg = createProcessGroupNCCLWithMPI(argc, argv);
+  #else
+    // Init mpi process group ptr
+    auto pg = c10d::ProcessGroupMPI::createProcessGroupMPI();
+  #endif
+
+  // Retrieving rank and num_ranks
+  auto num_ranks = pg->getSize();
   auto rank = pg->getRank();
 
   // Determine device
   torch::Device device = torch::kCPU;
   if (torch::cuda::is_available()) {
-    std::cout << "[Rank " << rank << "] " << "CUDA is available! Training on GPU " << rank << std::endl;
+    std::cout << "[Rank " << rank << "] " << "CUDA is available!" << std::endl;
     device = torch::Device(torch::kCUDA, rank); // put on cuda device with idx = rank
   }
+  std::cout << "[Rank " << rank << "] " << "Running on device: " << device << std::endl;
 
   // Read train dataset
   const char* kDataRoot = "./data";
@@ -89,13 +178,13 @@ int main(int argc, char* argv[]) {
 
   // Distributed Random Sampler
   auto data_sampler = torch::data::samplers::DistributedRandomSampler(
-      train_dataset.size().value(), numranks, rank, false);
+      train_dataset.size().value(), num_ranks, rank, false);
 
-  auto num_train_samples_per_proc = train_dataset.size().value() / numranks;
+  auto num_train_samples_per_proc = train_dataset.size().value() / num_ranks;
 
   // Generate dataloader
   auto total_batch_size = 64;
-  auto batch_size_per_proc = total_batch_size / numranks; // effective batch size in each processor
+  auto batch_size_per_proc = total_batch_size / num_ranks; // effective batch size in each processor
   auto data_loader = torch::data::make_data_loader(
     std::move(train_dataset), data_sampler, batch_size_per_proc
   );
@@ -145,6 +234,7 @@ int main(int argc, char* argv[]) {
       auto prediction = model->forward(ip);
       nvtxRangePop();
 
+      // Compute loss
       auto loss = torch::nll_loss(torch::log_softmax(prediction, 1), op);
 
       // Backpropagation
@@ -165,10 +255,16 @@ int main(int argc, char* argv[]) {
         auto work = pg->allreduce(tmp);
         works.push_back(std::move(work));
       }
-      waitWork(pg, works);
+
+      // wait the grad all-reduce to finish
+      #ifdef USE_NCCL_AS_COMM_BACKEND
+        waitWork<c10d::ProcessGroupNCCL>(pg, works);
+      #else
+        waitWork<c10d::ProcessGroupMPI>(pg, works);
+      #endif
 
       for (auto& param : model->named_parameters()) {
-        param.value().grad().data() = param.value().grad().data() / numranks;
+        param.value().grad().data() = param.value().grad().data() / num_ranks;
       }
 
       nvtxRangePop();
@@ -230,4 +326,23 @@ int main(int argc, char* argv[]) {
     std::cout << "Test Accuracy - " << 100.0 * num_correct / num_test_samples
               << std::endl;
   } // end rank 0
+
+  // finalize distributed environment
+  #ifdef USE_NCCL_AS_COMM_BACKEND
+    // stop all the threads and destroy all nccl comms until waiting all nccl kernels finished
+    pg->shutdown();
+    // explicitly finalize MPI
+    MPI_Finalize();
+    std::cout << "[Rank " << rank << "] " << "Distributed environment finalized for NCCL" << std::endl;
+  #else
+    // // barrier all ranks
+    // auto work = pg->barrier(); work->wait();
+    // // stop all the threads and MPI comms
+    // pg->abort();
+    std::cout << "[Rank " << rank << "] " << "Distributed environment finalized for MPI" << std::endl;
+  #endif
+
+  std::cout << "[Rank " << rank << "] " << "Training ends successfully" << std::endl;
+
+  return 0;
 }
