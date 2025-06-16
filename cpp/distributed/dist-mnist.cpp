@@ -5,11 +5,16 @@
 #define USE_C10D_MPI
 #endif
 
+#include <iostream>
+#include <string>
+
 #include <torch/csrc/distributed/c10d/Work.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupMPI.hpp>
 #include <torch/torch.h>
-#include <iostream>
+
+#include <cuda_profiler_api.h>
+#include "nvtx3/nvToolsExt.h"
 
 // Define a Convolutional Module
 struct ModelImpl : torch::nn::Module {
@@ -71,7 +76,7 @@ int main(int argc, char* argv[]) {
   // Determine device
   torch::Device device = torch::kCPU;
   if (torch::cuda::is_available()) {
-    std::cout << "CUDA is available! Training on GPU." << std::endl;
+    std::cout << "[Rank " << rank << "] " << "CUDA is available! Training on GPU " << rank << std::endl;
     device = torch::Device(torch::kCUDA, rank); // put on cuda device with idx = rank
   }
 
@@ -111,9 +116,19 @@ int main(int argc, char* argv[]) {
 
   // Run training loop on train dataset
   size_t num_epochs = 10;
+  int epoch_profile_start = 4, epoch_profile_stop = 6; // profile for epoch in range [epoch_profile_start, epoch_profile_stop)
   for (size_t epoch = 1; epoch <= num_epochs; ++epoch) {
     size_t num_correct = 0;
 
+    if (epoch == epoch_profile_start) {
+      cudaProfilerStart();
+    }
+    else if (epoch == epoch_profile_stop) {
+      cudaProfilerStop();
+    }
+
+    std::string epoch_str = "Epoch " + std::to_string(epoch);
+    auto rangeId = nvtxRangeStartA(epoch_str.c_str());
     for (auto& batch : *data_loader) {
       auto ip = batch.data.to(device);
       auto op = batch.target.squeeze().to(device);
@@ -126,40 +141,50 @@ int main(int argc, char* argv[]) {
       model->zero_grad();
 
       // Execute forward pass
+      nvtxRangePushA("forward");
       auto prediction = model->forward(ip);
+      nvtxRangePop();
 
       auto loss = torch::nll_loss(torch::log_softmax(prediction, 1), op);
 
       // Backpropagation
+      nvtxRangePushA("backward");
       loss.backward();
+      nvtxRangePop();
 
       /** Averaging the gradients of the parameters in all the processors
        * NOTE: This may lag behind DistributedDataParallel (DDP) in performance
        * since this synchronizes parameters after backward pass while DDP
        * overlaps synchronizing parameters and computing gradients in backward pass 
-       */ 
+       */
+      nvtxRangePushA("grad allreduce");
+
       std::vector<::c10::intrusive_ptr<::c10d::Work>> works;
       for (auto& param : model->named_parameters()) {
         std::vector<at::Tensor> tmp = {param.value().grad()};
         auto work = pg->allreduce(tmp);
         works.push_back(std::move(work));
       }
-
       waitWork(pg, works);
 
       for (auto& param : model->named_parameters()) {
         param.value().grad().data() = param.value().grad().data() / numranks;
       }
 
+      nvtxRangePop();
+
       // Update parameters
+      nvtxRangePushA("optimize");
       optimizer.step();
+      nvtxRangePop();
 
       auto guess = prediction.argmax(1);
       num_correct += torch::sum(guess.eq_(op)).item<int64_t>();
     } // end batch loader
+    nvtxRangeEnd(rangeId);
 
+    // print accuracy for each epoch in each rank
     auto accuracy = 100.0 * num_correct / num_train_samples_per_proc;
-
     std::cout << "Accuracy in rank " << rank << " in epoch " << epoch << " - "
               << accuracy << std::endl;
 

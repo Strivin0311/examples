@@ -16,4 +16,15 @@ make
 
 NUM_PROCS=8
 
-mpirun --allow-run-as-root -np $NUM_PROCS ./dist-mnist
+CMD="mpirun --allow-run-as-root -np $NUM_PROCS ./dist-mnist"
+
+$CMD
+
+
+# --- profile dist-mnist --- #
+
+nsys profile \
+    --force-overwrite true \
+    -o dist-mnist.nsys-rep \
+    --capture-range=cudaProfilerApi \
+    $CMD
