@@ -19,11 +19,14 @@ sudo make install
 
 # cd back to examples/cpp/dcgan/
 
+# NOTE: generally, libtorch will be installed at: $TORCH_HOME/lib/libtorch.so
 export TORCH_HOME="/usr/local/lib/python3.12/dist-packages/torch/"
 
 mkdir build && cd build
 
 cmake -DCMAKE_PREFIX_PATH=$TORCH_HOME ..
+# or directly:
+# cmake -DCMAKE_PREFIX_PATH=`python3 -c 'import torch;print(torch.utils.cmake_prefix_path)'` ..
 
 make
 
@@ -36,6 +39,4 @@ make
 
 cd ..
 
-python display_samples.py -i ./build/dcgan-sample-10.pt
-
-# the predicted image will be saved as `out.png`
+python display_samples.py -i ./build/dcgan-sample-10.pt -o ./build/out.png
