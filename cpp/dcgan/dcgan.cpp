@@ -26,24 +26,22 @@ const bool kRestoreFromCheckpoint = false;
 // After how many batches to log a new update with the loss value.
 const int64_t kLogInterval = 10;
 
-using namespace torch;
-
-struct DCGANGeneratorImpl : nn::Module {
+struct DCGANGeneratorImpl : torch::nn::Module {
   DCGANGeneratorImpl(int kNoiseSize)
-      : conv1(nn::ConvTranspose2dOptions(kNoiseSize, 256, 4)
+      : conv1(torch::nn::ConvTranspose2dOptions(kNoiseSize, 256, 4)
                   .bias(false)),
         batch_norm1(256),
-        conv2(nn::ConvTranspose2dOptions(256, 128, 3)
+        conv2(torch::nn::ConvTranspose2dOptions(256, 128, 3)
                   .stride(2)
                   .padding(1)
                   .bias(false)),
         batch_norm2(128),
-        conv3(nn::ConvTranspose2dOptions(128, 64, 4)
+        conv3(torch::nn::ConvTranspose2dOptions(128, 64, 4)
                   .stride(2)
                   .padding(1)
                   .bias(false)),
         batch_norm3(64),
-        conv4(nn::ConvTranspose2dOptions(64, 1, 4)
+        conv4(torch::nn::ConvTranspose2dOptions(64, 1, 4)
                   .stride(2)
                   .padding(1)
                   .bias(false))
@@ -66,29 +64,29 @@ struct DCGANGeneratorImpl : nn::Module {
    return x;
  }
 
- nn::ConvTranspose2d conv1, conv2, conv3, conv4;
- nn::BatchNorm2d batch_norm1, batch_norm2, batch_norm3;
+ torch::nn::ConvTranspose2d conv1, conv2, conv3, conv4;
+ torch::nn::BatchNorm2d batch_norm1, batch_norm2, batch_norm3;
 };
 
 TORCH_MODULE(DCGANGenerator);
 
-nn::Sequential create_discriminator() {
-    return nn::Sequential(
+torch::nn::Sequential create_discriminator() {
+    return torch::nn::Sequential(
      // Layer 1
-     nn::Conv2d(nn::Conv2dOptions(1, 64, 4).stride(2).padding(1).bias(false)),
-     nn::LeakyReLU(nn::LeakyReLUOptions().negative_slope(0.2)),
+     torch::nn::Conv2d(torch::nn::Conv2dOptions(1, 64, 4).stride(2).padding(1).bias(false)),
+     torch::nn::LeakyReLU(torch::nn::LeakyReLUOptions().negative_slope(0.2)),
      // Layer 2
-     nn::Conv2d(nn::Conv2dOptions(64, 128, 4).stride(2).padding(1).bias(false)),
-     nn::BatchNorm2d(128),
-     nn::LeakyReLU(nn::LeakyReLUOptions().negative_slope(0.2)),
+     torch::nn::Conv2d(torch::nn::Conv2dOptions(64, 128, 4).stride(2).padding(1).bias(false)),
+     torch::nn::BatchNorm2d(128),
+     torch::nn::LeakyReLU(torch::nn::LeakyReLUOptions().negative_slope(0.2)),
      // Layer 3
-     nn::Conv2d(
-         nn::Conv2dOptions(128, 256, 4).stride(2).padding(1).bias(false)),
-     nn::BatchNorm2d(256),
-     nn::LeakyReLU(nn::LeakyReLUOptions().negative_slope(0.2)),
+     torch::nn::Conv2d(
+         torch::nn::Conv2dOptions(128, 256, 4).stride(2).padding(1).bias(false)),
+     torch::nn::BatchNorm2d(256),
+     torch::nn::LeakyReLU(torch::nn::LeakyReLUOptions().negative_slope(0.2)),
      // Layer 4
-     nn::Conv2d(nn::Conv2dOptions(256, 1, 3).stride(1).padding(0).bias(false)),
-     nn::Sigmoid());
+     torch::nn::Conv2d(torch::nn::Conv2dOptions(256, 1, 3).stride(1).padding(0).bias(false)),
+     torch::nn::Sigmoid());
 }
 
 int main(int argc, const char* argv[]) {
@@ -121,7 +119,7 @@ int main(int argc, const char* argv[]) {
   DCGANGenerator generator(kNoiseSize);
   generator->to(device);
 
-  nn::Sequential discriminator = create_discriminator();
+  torch::nn::Sequential discriminator = create_discriminator();
   discriminator->to(device);
 
   // Assume the MNIST dataset is available under `kDataFolder`;

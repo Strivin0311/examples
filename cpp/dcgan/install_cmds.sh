@@ -7,9 +7,7 @@ git clone https://github.com/p-ranav/argparse
 
 cd argparse
 
-mkdir build
-
-cd build
+mkdir build && cd build
 
 cmake -DARGPARSE_BUILD_SAMPLES=off -DARGPARSE_BUILD_TESTS=off ..
 
@@ -32,8 +30,7 @@ make
 
 # ---   run dcgan --- #
 
-./dcgan --epochs 10
-
+./dcgan --epochs 30
 
 # ---  run prediction --- #
 

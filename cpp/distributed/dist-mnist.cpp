@@ -12,8 +12,8 @@
 #include <iostream>
 
 // Define a Convolutional Module
-struct Model : torch::nn::Module {
-  Model()
+struct ModelImpl : torch::nn::Module {
+  ModelImpl()
       : conv1(torch::nn::Conv2dOptions(1, 10, 5)),
         conv2(torch::nn::Conv2dOptions(10, 20, 5)),
         fc1(320, 50),
@@ -25,7 +25,7 @@ struct Model : torch::nn::Module {
     register_module("fc2", fc2);
   }
 
-  torch::Tensor forward(torch::Tensor x) {
+  at::Tensor forward(at::Tensor x) {
     x = torch::relu(torch::max_pool2d(conv1->forward(x), 2));
     x = torch::relu(
         torch::max_pool2d(conv2_drop->forward(conv2->forward(x)), 2));
@@ -42,6 +42,10 @@ struct Model : torch::nn::Module {
   torch::nn::Linear fc1;
   torch::nn::Linear fc2;
 };
+
+// use TORCH_MODULE macor wrapper to avoid explicit shared ptr creation
+// see: https://docs.pytorch.org/tutorials/advanced/cpp_frontend.html
+TORCH_MODULE(Model);
 
 void waitWork(
     c10::intrusive_ptr<c10d::ProcessGroupMPI> pg,
@@ -64,7 +68,13 @@ int main(int argc, char* argv[]) {
   auto numranks = pg->getSize();
   auto rank = pg->getRank();
 
-  // TRAINING
+  // Determine device
+  torch::Device device = torch::kCPU;
+  if (torch::cuda::is_available()) {
+    std::cout << "CUDA is available! Training on GPU." << std::endl;
+    device = torch::Device(torch::kCUDA, rank); // put on cuda device with idx = rank
+  }
+
   // Read train dataset
   const char* kDataRoot = "./data";
   auto train_dataset =
@@ -80,29 +90,33 @@ int main(int argc, char* argv[]) {
 
   // Generate dataloader
   auto total_batch_size = 64;
-  auto batch_size_per_proc =
-      total_batch_size / numranks; // effective batch size in each processor
+  auto batch_size_per_proc = total_batch_size / numranks; // effective batch size in each processor
   auto data_loader = torch::data::make_data_loader(
-      std::move(train_dataset), data_sampler, batch_size_per_proc);
+    std::move(train_dataset), data_sampler, batch_size_per_proc
+  );
 
-  // setting manual seed
-  torch::manual_seed(0);
+  // Set manual seed
+  torch::manual_seed(42);
 
-  auto model = std::make_shared<Model>();
+  // Create model on CPU
+  // here we can avoid explicit shared ptr creation thanks to TORCH_MODULE
+  Model model; // auto model = std::make_shared<Model>();
 
+  // Move model to determined device
+  model->to(device);
+
+  // Create optimizer
   auto learning_rate = 1e-2;
-
   torch::optim::SGD optimizer(model->parameters(), learning_rate);
 
-  // Number of epochs
+  // Run training loop on train dataset
   size_t num_epochs = 10;
-
   for (size_t epoch = 1; epoch <= num_epochs; ++epoch) {
     size_t num_correct = 0;
 
     for (auto& batch : *data_loader) {
-      auto ip = batch.data;
-      auto op = batch.target.squeeze();
+      auto ip = batch.data.to(device);
+      auto op = batch.target.squeeze().to(device);
 
       // convert to required formats
       ip = ip.to(torch::kF32);
@@ -119,14 +133,14 @@ int main(int argc, char* argv[]) {
       // Backpropagation
       loss.backward();
 
-      // Averaging the gradients of the parameters in all the processors
-      // Note: This may lag behind DistributedDataParallel (DDP) in performance
-      // since this synchronizes parameters after backward pass while DDP
-      // overlaps synchronizing parameters and computing gradients in backward
-      // pass
+      /** Averaging the gradients of the parameters in all the processors
+       * NOTE: This may lag behind DistributedDataParallel (DDP) in performance
+       * since this synchronizes parameters after backward pass while DDP
+       * overlaps synchronizing parameters and computing gradients in backward pass 
+       */ 
       std::vector<::c10::intrusive_ptr<::c10d::Work>> works;
       for (auto& param : model->named_parameters()) {
-        std::vector<torch::Tensor> tmp = {param.value().grad()};
+        std::vector<at::Tensor> tmp = {param.value().grad()};
         auto work = pg->allreduce(tmp);
         works.push_back(std::move(work));
       }
@@ -151,7 +165,7 @@ int main(int argc, char* argv[]) {
 
   } // end epoch
 
-  // TESTING ONLY IN RANK 0
+  // Run Inference/Evaluation on test dataset only on rank 0
   if (rank == 0) {
     auto test_dataset =
         torch::data::datasets::MNIST(
@@ -168,8 +182,8 @@ int main(int argc, char* argv[]) {
     size_t num_correct = 0;
 
     for (auto& batch : *test_loader) {
-      auto ip = batch.data;
-      auto op = batch.target.squeeze();
+      auto ip = batch.data.to(device);
+      auto op = batch.target.squeeze().to(device);
 
       // convert to required format
       ip = ip.to(torch::kF32);

@@ -7,6 +7,8 @@ export TORCH_HOME="/usr/local/lib/python3.12/dist-packages/torch/"
 mkdir build && cd build
 
 cmake -DCMAKE_PREFIX_PATH=$TORCH_HOME ..
+# or directly:
+# cmake -DCMAKE_PREFIX_PATH=`python3 -c 'import torch;print(torch.utils.cmake_prefix_path)'` ..
 
 make
 
