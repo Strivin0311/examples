@@ -14,16 +14,17 @@ make
 
 # ---   run dist-mnist --- #
 
-# the following env vars are necessary for initializing NCCL process group
+# the following env vars are necessary for initializing NCCL process group's store
 # but no need for MPI process group
 export MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
 export MASTER_PORT=${MASTER_PORT:-16988}
 
 NUM_PROCS=8
 
-CMD="mpirun --allow-run-as-root -np $NUM_PROCS ./dist-mnist"
+CMD="mpirun --allow-run-as-root -np $NUM_PROCS ./dist-mnist > dist-mnist.log 2>&1"
 
-$CMD > dist-mnist.log 2>&1
+$CMD
+exit
 
 # --- profile dist-mnist --- #
 
