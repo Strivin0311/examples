@@ -10,6 +10,7 @@
 #endif
 
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include <torch/csrc/distributed/c10d/Work.hpp>
@@ -89,24 +90,77 @@ void waitWork(
 }
 
 
-c10::intrusive_ptr<c10d::ProcessGroupNCCL> createProcessGroupNCCLWithMPI(int argc, char* argv[]) {
-  // Initialize MPI explicitly
-  int rank, num_ranks;
-  MPI_CHECK(MPI_Init(&argc, &argv));
-  MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
-  MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &num_ranks));
-  std::cout << "[Rank " << rank << "] " << "MPI initialized for NCCL" << std::endl;
+std::string parseLauncher(int argc, char* argv[]) {
+  std::string launcher = "mpirun"; int opt;
+  while ((opt = getopt(argc, argv, "l:")) != -1) {
+      switch (opt) {
+          case 'l':
+              launcher = optarg;
+              break;
+          default: /* '?' */
+              std::cerr << "Usage: " << argv[0] << " -l launcher {mpirun|torchrun}" << std::endl;
+              exit(EXIT_FAILURE);
+      }
+  }
 
+  // reset opt to allow reparsing in the future
+  optind = 1; // reset optind to 1
+  optarg = nullptr; // reset optarg
+  
+  return launcher;
+}
+
+
+c10::intrusive_ptr<c10d::ProcessGroupNCCL> createProcessGroupNCCL(int argc, char* argv[]) {
+  std::string launcher = parseLauncher(argc, argv);
+
+  int rank, num_ranks;
+  if (launcher == "mpirun") {
+    // Check if MPI was already initialized
+    int mpi_was_initialized = 0;
+    MPI_CHECK(MPI_Initialized(&mpi_was_initialized));
+    std::cout << "Was MPI initialized: " << mpi_was_initialized << std::endl;
+    if (mpi_was_initialized != 0) {
+      /** TODO: do something here if MPI was already initialized */
+    }
+    
+    // Initialize MPI explicitly
+    MPI_CHECK(MPI_Init(&argc, &argv));
+    MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
+    MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &num_ranks));
+    std::cout << "[Rank " << rank << "] " << "MPI initialized for NCCL" << std::endl;
+  }
+  else if (launcher == "torchrun") {
+    rank = std::stoi(getenv("RANK"));
+    num_ranks = std::stoi(getenv("WORLD_SIZE"));
+    std::cout << "[Rank " << rank << "] " << "TorchRun initialized for NCCL" << std::endl;
+  }
+  else {
+    std::stringstream ss; ss << "Unsupported launcher: " << launcher;
+    TORCH_CHECK(false, ss.str());
+  }
+  
   // Init store
-  std::string host_addr(getenv("MASTER_ADDR"));
+  std::string master_addr(getenv("MASTER_ADDR"));
+  uint16_t master_port = std::stoi(getenv("MASTER_PORT"));
+  if (launcher == "torchrun") {
+    /** NOTE: when using torchrun, the master port is already occupied
+     * thus here we increment the master port to use
+     */
+    master_port++;
+  }
   c10d::TCPStoreOptions store_options = {
-    .port=(std::uint16_t)std::stoi(getenv("MASTER_PORT")),
-    /** NOTE: this determines the only master rank, 
-     * which is required, otherwise the initialization will hang
+    .port=master_port,
+    /** NOTE: this is necessary to determine the master rank,
+     * otherwise the initialization will hang
      */
     .isServer=rank == 0,
   };
-  c10::intrusive_ptr<c10d::TCPStore> store = c10::make_intrusive<c10d::TCPStore>(host_addr, store_options);
+  auto store = c10::make_intrusive<c10d::TCPStore>(master_addr, store_options);
+  /** NOTE: PrefixStore is no use to the address-occupied problem
+   * I guess we need to pass in the exact store object that torchrun created
+   */
+  // store = c10::make_intrusive<c10d::PrefixStore>("dist-mnist/", store);
 
   // Init nccl process group ptr
   return c10::make_intrusive<c10d::ProcessGroupNCCL>(store, rank, num_ranks);
@@ -149,9 +203,17 @@ int main(int argc, char* argv[]) {
   printDistEnvVars();
   printProcessGroupBackend();
 
+  // Parse launcher
+  std::string launcher = parseLauncher(argc, argv);
+  std::cout << "Launcher: " << launcher << std::endl;
+
+  #ifndef USE_NCCL_AS_COMM_BACKEND
+  TORCH_CHECK(launcher != "torchrun", "torchrun launcher is not supported for MPI backend");
+  #endif
+
   // Creating Process Group
   #ifdef USE_NCCL_AS_COMM_BACKEND
-    auto pg = createProcessGroupNCCLWithMPI(argc, argv);
+    auto pg = createProcessGroupNCCL(argc, argv);
   #else
     // Init mpi process group ptr
     auto pg = c10d::ProcessGroupMPI::createProcessGroupMPI();
@@ -331,14 +393,14 @@ int main(int argc, char* argv[]) {
   #ifdef USE_NCCL_AS_COMM_BACKEND
     // stop all the threads and destroy all nccl comms until waiting all nccl kernels finished
     pg->shutdown();
-    // explicitly finalize MPI
-    MPI_Finalize();
+    if (launcher == "mpirun")
+      // explicitly finalize MPI if using mpirun
+      MPI_Finalize();
     std::cout << "[Rank " << rank << "] " << "Distributed environment finalized for NCCL" << std::endl;
   #else
-    // // barrier all ranks
-    // auto work = pg->barrier(); work->wait();
     // // stop all the threads and MPI comms
     // pg->abort();
+    // MPI_Finalize();
     std::cout << "[Rank " << rank << "] " << "Distributed environment finalized for MPI" << std::endl;
   #endif
 
