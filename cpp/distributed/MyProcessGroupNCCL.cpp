@@ -31,12 +31,12 @@ namespace myc10d {
     }
 
     // get all nccl comms
-    std::unordered_map<std::string, std::shared_ptr<c10d::NCCLComm>>& MyProcessGroupNCCL::getNCCLComms() {
+    std::unordered_map<std::string, std::shared_ptr<c10d::NCCLComm>>& MyProcessGroupNCCL::getTorchNCCLComms() {
         return devNCCLCommMap_; // this is a protected member in the parent class
     }
 
     // get the nccl comm w.r.t. the device
-    std::shared_ptr<c10d::NCCLComm> MyProcessGroupNCCL::getNCCLComm(int device) {
+    std::shared_ptr<c10d::NCCLComm> MyProcessGroupNCCL::getTorchNCCLComm(int device) {
         device = device == -1 ? getDevice() : device;
         std::string deviceStr = std::to_string(device);
 
@@ -47,6 +47,13 @@ namespace myc10d {
         
         return devNCCLCommMap_.at(deviceStr);
     }
-}
+
+    /** NOTE: only provided in the main branch >= v-2.7.1 */
+    // get the nccl comm ptr w.r.t the current device
+    // int64_t MyProcessGroupNCCL::getNCCLCommPtr() {
+    //     return c10d::ProcessGroupNCCL::getCommPtr();
+    // }
+    
+} // namespace myc10d
 
 #endif // USE_MY_C10D_NCCL

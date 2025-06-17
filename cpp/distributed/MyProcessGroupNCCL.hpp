@@ -25,13 +25,21 @@ namespace myc10d {
         // get the nccl stream w.r.t. the device
         at::cuda::CUDAStream& getNCCLStream(int device = -1);
 
-        // get all nccl comms
-        std::unordered_map<std::string, std::shared_ptr<c10d::NCCLComm>>& getNCCLComms();
+        // get all torch nccl comms
+        std::unordered_map<std::string, std::shared_ptr<c10d::NCCLComm>>& getTorchNCCLComms();
 
-        // get the nccl comm w.r.t. the device
-        std::shared_ptr<c10d::NCCLComm> getNCCLComm(int device = -1);
+        // get the torch nccl comm w.r.t. the device
+        std::shared_ptr<c10d::NCCLComm> getTorchNCCLComm(int device = -1);
+
+        /** NOTE: only provided in the main branch >= v-2.7.1 */
+        // get the nccl comm ptr w.r.t the current device
+        // int64_t getNCCLCommPtr();
 
         // set the device
+        /** NOTE: another (maybe better) way is to just use the current device
+         * auto device = at::Device(at::kCUDA, at::cuda::current_device());
+         * std::string deviceKey = std::to_string(device.index());
+         */
         void setDevice(int device) { device_ = device; }
 
         int getDevice() const { return device_; }
