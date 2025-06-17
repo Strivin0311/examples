@@ -25,6 +25,7 @@
 #include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
 #include <torch/csrc/distributed/c10d/NCCLUtils.hpp>
 #include <torch/torch.h>
+#include <c10/util/env.h>
 
 #include <cuda_profiler_api.h>
 #include "nvtx3/nvToolsExt.h"
@@ -324,7 +325,7 @@ void analysisMyNCCL(Logger& logger, c10::intrusive_ptr<myc10d::MyProcessGroupNCC
     ss << "Key: " << pair.first << ", Value: " << pair.second << std::endl;
   }
 
-  int device = pg->getDevice();
+  int device = pg->getDevice(); std::string deviceStr = std::to_string(device);
   ss << subSep << " NCCL stream for current device " << device << " " << subSep << std::endl;
   ss << pg->getNCCLStream() << std::endl;
 
@@ -333,13 +334,20 @@ void analysisMyNCCL(Logger& logger, c10::intrusive_ptr<myc10d::MyProcessGroupNCC
   // c10d::NCCLComm nccl_comm(comm);
 
   ss << subSep << " TORCH NCCL version: " << c10d::getNcclVersion() << " " << subSep << std::endl;
-  
-  /** BUG: when using the member functions defined in NCCLComm,
-   * we run into an unsolved bug:
-   * undefined reference to `c10d::NCCLComm::getNcclComm()' 
-   */
   ss << subSep << " TORCH NCCL communicator for current device " << device << " " << subSep << std::endl;
   std::shared_ptr<c10d::NCCLComm> torchNCCLComm = pg->getNCCLComm();
+
+  /** NOTE: when using the member functions defined in NCCLComm,
+   * I run into an issue: undefined reference to `c10d::NCCLComm::getNcclComm()' 
+   * later I've found out that all the member functions including`c10d::NCCLComm::getNcclComm()'
+   * are local symbols that only visible inside the shared library `libtorch_cuda.so`,
+   * with my own command as below:
+   * nm /usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda.so > libtorch_cuda.log
+   * and the relevant output looks like:
+   * 0000000000c98a40 t _ZN4c10d8NCCLComm11getNcclCommEv
+   * 0000000000908e96 t _ZN4c10d8NCCLComm11getNcclCommEv.cold
+   * thus we have no direct access to NCCLComm
+   */
   // ncclComm_t ncclComm = torchNCCLComm->getNcclComm();
   // ncclUniqueId nccUID = torchNCCLComm->getNcclId(); auto ncclUIDString = getNCCLUIDString(nccUID);
   // ss << subSep << " NCCL communicator for current device " << device << " " << subSep << std::endl;
