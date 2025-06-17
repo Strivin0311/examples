@@ -9,8 +9,13 @@
 #define USE_C10D_NCCL
 #endif
 
+#ifndef USE_MY_C10D_NCCL
+#define USE_MY_C10D_NCCL
+#endif
+
 #include <iostream>
 #include <sstream>
+#include <fstream>
 #include <string>
 
 #include <torch/csrc/distributed/c10d/Work.hpp>
@@ -26,7 +31,12 @@
 #include "mpi.h"
 #include "nccl.h"
 
+#include "MyProcessGroupNCCL.hpp"
+
+
 #define USE_NCCL_AS_COMM_BACKEND
+#define USE_MY_NCCL_AS_COMM_BACKEND
+
 
 #define MPI_CHECK(cmd)                                                   \
   do {                                                                   \
@@ -38,6 +48,35 @@
       TORCH_CHECK(false, err);                                           \
     }                                                                    \
   } while (0)
+
+
+
+class Logger {
+public:
+    Logger(std::string prefix, int rank, bool append = false) {
+        std::string filename = prefix + "_r" + std::to_string(rank) + ".log";
+        logFile.open(filename, std::ios_base::out | (append ? std::ios_base::app : std::ios_base::trunc));
+        if (!logFile.is_open()) {
+            std::cerr << "Failed to open log file: " << filename << std::endl;
+        }
+    }
+
+    void log(const std::string& message) {
+        if (logFile.is_open()) {
+            logFile << message << std::endl;
+        }
+    }
+
+    ~Logger() {
+        if (logFile.is_open()) {
+            logFile.close();
+        }
+    }
+
+private:
+    std::ofstream logFile;
+};
+
 
 // Define a Convolutional Module
 struct ModelImpl : torch::nn::Module {
@@ -74,6 +113,7 @@ struct ModelImpl : torch::nn::Module {
 // use TORCH_MODULE macor wrapper to avoid explicit shared ptr creation
 // see: https://docs.pytorch.org/tutorials/advanced/cpp_frontend.html
 TORCH_MODULE(Model);
+
 
 template <typename ProcessGroupBackend>
 void waitWork(
@@ -167,6 +207,67 @@ c10::intrusive_ptr<c10d::ProcessGroupNCCL> createProcessGroupNCCL(int argc, char
 }
 
 
+c10::intrusive_ptr<myc10d::MyProcessGroupNCCL> createMyProcessGroupNCCL(int argc, char* argv[]) {
+  std::string launcher = parseLauncher(argc, argv);
+
+  int rank, num_ranks;
+  if (launcher == "mpirun") {
+    // Check if MPI was already initialized
+    int mpi_was_initialized = 0;
+    MPI_CHECK(MPI_Initialized(&mpi_was_initialized));
+    std::cout << "Was MPI initialized: " << mpi_was_initialized << std::endl;
+    if (mpi_was_initialized != 0) {
+      /** TODO: do something here if MPI was already initialized */
+    }
+    
+    // Initialize MPI explicitly
+    MPI_CHECK(MPI_Init(&argc, &argv));
+    MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
+    MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &num_ranks));
+    std::cout << "[Rank " << rank << "] " << "MPI initialized for MyNCCL" << std::endl;
+  }
+  else if (launcher == "torchrun") {
+    rank = std::stoi(getenv("RANK"));
+    num_ranks = std::stoi(getenv("WORLD_SIZE"));
+    std::cout << "[Rank " << rank << "] " << "TorchRun initialized for MyNCCL" << std::endl;
+  }
+  else {
+    std::stringstream ss; ss << "Unsupported launcher: " << launcher;
+    TORCH_CHECK(false, ss.str());
+  }
+  
+  // Init store
+  std::string master_addr(getenv("MASTER_ADDR"));
+  uint16_t master_port = std::stoi(getenv("MASTER_PORT"));
+  if (launcher == "torchrun") {
+    /** NOTE: when using torchrun, the master port is already occupied
+     * thus here we increment the master port to use
+     */
+    master_port++;
+  }
+  c10d::TCPStoreOptions store_options = {
+    .port=master_port,
+    /** NOTE: this is necessary to determine the master rank,
+     * otherwise the initialization will hang
+     */
+    .isServer=rank == 0,
+  };
+  auto store = c10::make_intrusive<c10d::TCPStore>(master_addr, store_options);
+  /** NOTE: PrefixStore is no use to the address-occupied problem
+   * I guess we need to pass in the exact store object that torchrun created
+   */
+  // store = c10::make_intrusive<c10d::PrefixStore>("dist-mnist/", store);
+
+  // Init my nccl process group ptr
+  auto pg = c10::make_intrusive<myc10d::MyProcessGroupNCCL>(store, rank, num_ranks);
+  
+  // Set device
+  pg->setDevice(rank);
+
+  return pg;
+}
+
+
 void printMainArgs(int argc, char* argv[]) {
   std::cout << "Printing main arguments: " << std::endl;
   std::cout << "Number of arguments: " << argc << std::endl;
@@ -189,11 +290,34 @@ void printDistEnvVars() {
 void printProcessGroupBackend() {
   std::cout << "Printing process group backend: ";
   #ifdef USE_NCCL_AS_COMM_BACKEND
-  std::cout << "NCCL" << std::endl;
+    #ifdef USE_MY_NCCL_AS_COMM_BACKEND
+      std::cout << "MyNCCL" << std::endl;
+    #else
+      std::cout << "NCCL" << std::endl;
+    #endif
   #else
   std::cout << "MPI" << std::endl;
   #endif
   std::cout << std::endl;
+}
+
+
+void analysisMyNCCL(Logger& logger, c10::intrusive_ptr<myc10d::MyProcessGroupNCCL> pg) {
+  std::string sep(50, '='); std::string subSep(35, '-');
+  std::stringstream ss;
+
+  ss << sep << " Analysis MyNCCL " << sep << std::endl;
+  
+  ss << subSep << " All NCCL streams " << subSep << std::endl;
+  auto streams = pg->getNCCLStreams();
+  for (const auto& pair : streams) {
+    ss << "Key: " << pair.first << ", Value: " << pair.second << std::endl;
+  }
+
+  ss << subSep << " NCCL stream for current device " << pg->getDevice() << " " << subSep << std::endl;
+  ss << pg->getNCCLStream() << std::endl;
+
+  logger.log(ss.str());
 }
 
 
@@ -213,7 +337,11 @@ int main(int argc, char* argv[]) {
 
   // Creating Process Group
   #ifdef USE_NCCL_AS_COMM_BACKEND
-    auto pg = createProcessGroupNCCL(argc, argv);
+    #ifdef USE_MY_NCCL_AS_COMM_BACKEND
+      auto pg = createMyProcessGroupNCCL(argc, argv);
+    #else
+      auto pg = createProcessGroupNCCL(argc, argv);
+    #endif
   #else
     // Init mpi process group ptr
     auto pg = c10d::ProcessGroupMPI::createProcessGroupMPI();
@@ -222,6 +350,9 @@ int main(int argc, char* argv[]) {
   // Retrieving rank and num_ranks
   auto num_ranks = pg->getSize();
   auto rank = pg->getRank();
+
+  // Init logger
+  Logger logger("dist-mnist", rank);
 
   // Determine device
   torch::Device device = torch::kCPU;
@@ -389,6 +520,12 @@ int main(int argc, char* argv[]) {
               << std::endl;
   } // end rank 0
 
+
+  // Analysis MyNCCL
+  #ifdef USE_MY_NCCL_AS_COMM_BACKEND
+    analysisMyNCCL(logger, pg);
+  #endif
+
   // finalize distributed environment
   #ifdef USE_NCCL_AS_COMM_BACKEND
     // stop all the threads and destroy all nccl comms until waiting all nccl kernels finished
@@ -396,7 +533,11 @@ int main(int argc, char* argv[]) {
     if (launcher == "mpirun")
       // explicitly finalize MPI if using mpirun
       MPI_Finalize();
-    std::cout << "[Rank " << rank << "] " << "Distributed environment finalized for NCCL" << std::endl;
+    #ifdef USE_MY_NCCL_AS_COMM_BACKEND
+      std::cout << "[Rank " << rank << "] " << "Distributed environment finalized for MyNCCL" << std::endl;
+    #else
+      std::cout << "[Rank " << rank << "] " << "Distributed environment finalized for NCCL" << std::endl;
+    #endif 
   #else
     // // stop all the threads and MPI comms
     // pg->abort();

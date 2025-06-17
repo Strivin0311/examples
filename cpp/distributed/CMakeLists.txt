@@ -19,10 +19,11 @@ endif()
 
 add_definitions(-DUSE_C10D_MPI)
 add_definitions(-DUSE_C10D_NCCL)
+add_definitions(-DUSE_MY_C10D_NCCL)
 
 include_directories(SYSTEM ${MPI_C_INCLUDE_PATH} ${MPI_CXX_INCLUDE_PATH})
 
-add_executable(dist-mnist dist-mnist.cpp)
+add_executable(dist-mnist dist-mnist.cpp MyProcessGroupNCCL.cpp)
 target_link_libraries(dist-mnist ${TORCH_LIBRARIES})
 target_link_libraries(dist-mnist ${MPI_LIBRARIES})
 target_link_libraries(dist-mnist ${CMAKE_PREFIX_PATH}/lib/libc10.so)
