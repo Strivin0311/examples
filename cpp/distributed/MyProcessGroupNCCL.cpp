@@ -1,5 +1,6 @@
 #ifdef USE_MY_C10D_NCCL
 
+#include <torch/csrc/distributed/c10d/NCCLUtils.hpp>
 #include "MyProcessGroupNCCL.hpp"
 
 namespace myc10d {
@@ -19,14 +20,32 @@ namespace myc10d {
     // get the nccl stream w.r.t. the device
     at::cuda::CUDAStream& MyProcessGroupNCCL::getNCCLStream(int device) {
         device = device == -1 ? getDevice() : device;
-        std::string device_str = std::to_string(device);
+        std::string deviceStr = std::to_string(device);
 
         TORCH_CHECK(
-            ncclStreams_.find(device_str) != ncclStreams_.end(), 
-            "NCCL stream for device " + device_str + " not found"
+            ncclStreams_.find(deviceStr) != ncclStreams_.end(), 
+            "NCCL stream for device " + deviceStr + " not found"
         );
         
-        return ncclStreams_.at(device_str);
+        return ncclStreams_.at(deviceStr);
+    }
+
+    // get all nccl comms
+    std::unordered_map<std::string, std::shared_ptr<c10d::NCCLComm>>& MyProcessGroupNCCL::getNCCLComms() {
+        return devNCCLCommMap_; // this is a protected member in the parent class
+    }
+
+    // get the nccl comm w.r.t. the device
+    std::shared_ptr<c10d::NCCLComm> MyProcessGroupNCCL::getNCCLComm(int device) {
+        device = device == -1 ? getDevice() : device;
+        std::string deviceStr = std::to_string(device);
+
+        TORCH_CHECK(
+            ncclStreams_.find(deviceStr) != ncclStreams_.end(), 
+            "NCCL stream for device " + deviceStr + " not found"
+        );
+        
+        return devNCCLCommMap_.at(deviceStr);
     }
 }
 

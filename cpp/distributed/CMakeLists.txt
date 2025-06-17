@@ -1,8 +1,7 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 project(dist-mnist)
 
 find_package(Torch REQUIRED)
-
 find_package(MPI REQUIRED)
 
 option(DOWNLOAD_MNIST "Download the MNIST dataset from the internet" ON)
@@ -22,12 +21,22 @@ add_definitions(-DUSE_C10D_NCCL)
 add_definitions(-DUSE_MY_C10D_NCCL)
 
 include_directories(SYSTEM ${MPI_C_INCLUDE_PATH} ${MPI_CXX_INCLUDE_PATH})
+# file(GLOB INCLUDE_DIRS "${CMAKE_PREFIX_PATH}/include/torch/csrc/distributed/c10d/")
+# include_directories(${INCLUDE_DIRS})
 
 add_executable(dist-mnist dist-mnist.cpp MyProcessGroupNCCL.cpp)
+
 target_link_libraries(dist-mnist ${TORCH_LIBRARIES})
 target_link_libraries(dist-mnist ${MPI_LIBRARIES})
-target_link_libraries(dist-mnist ${CMAKE_PREFIX_PATH}/lib/libc10.so)
-target_link_libraries(dist-mnist ${CMAKE_PREFIX_PATH}/lib/libc10_cuda.so)
+# target_link_libraries(dist-mnist "/usr/lib/x86_64-linux-gnu/libnccl.so")
+
+# message("CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
+# file(GLOB LIBS "${CMAKE_PREFIX_PATH}/lib/*.so")
+# target_link_libraries(dist-mnist ${LIBS})
+# target_link_libraries(dist-mnist ${CMAKE_PREFIX_PATH}/lib/libtorch_cuda.so)
+# target_link_libraries(dist-mnist ${CMAKE_PREFIX_PATH}/lib/libc10.so)
+# target_link_libraries(dist-mnist ${CMAKE_PREFIX_PATH}/lib/libc10_cuda.so)
+
 
 if(MPI_COMPILE_FLAGS)
   set_target_properties(dist-mnist PROPERTIES

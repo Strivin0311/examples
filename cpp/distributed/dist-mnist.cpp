@@ -23,6 +23,7 @@
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupMPI.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
+#include <torch/csrc/distributed/c10d/NCCLUtils.hpp>
 #include <torch/torch.h>
 
 #include <cuda_profiler_api.h>
@@ -302,7 +303,16 @@ void printProcessGroupBackend() {
 }
 
 
-void analysisMyNCCL(Logger& logger, c10::intrusive_ptr<myc10d::MyProcessGroupNCCL> pg) {
+std::string getNCCLUIDString(ncclUniqueId& uid, int width = 4) {
+  std::stringstream ss;
+  for (int i = 0; i < width; ++i) {
+      ss << std::hex << std::setw(2) << std::setfill('0') << (int)(unsigned char)uid.internal[i];
+  }
+  return ss.str();
+}
+
+
+void analysisMyNCCL(Logger& logger, c10::intrusive_ptr<myc10d::MyProcessGroupNCCL> pg, int num_ranks, int rank) {
   std::string sep(50, '='); std::string subSep(35, '-');
   std::stringstream ss;
 
@@ -314,8 +324,26 @@ void analysisMyNCCL(Logger& logger, c10::intrusive_ptr<myc10d::MyProcessGroupNCC
     ss << "Key: " << pair.first << ", Value: " << pair.second << std::endl;
   }
 
-  ss << subSep << " NCCL stream for current device " << pg->getDevice() << " " << subSep << std::endl;
+  int device = pg->getDevice();
+  ss << subSep << " NCCL stream for current device " << device << " " << subSep << std::endl;
   ss << pg->getNCCLStream() << std::endl;
+
+  // ncclUniqueId nccl_uid; ncclGetUniqueId(&nccl_uid);
+  // ncclComm_t comm; ncclCommInitRank(&comm, num_ranks, nccl_uid, rank);
+  // c10d::NCCLComm nccl_comm(comm);
+
+  ss << subSep << " TORCH NCCL version: " << c10d::getNcclVersion() << " " << subSep << std::endl;
+  
+  /** BUG: when using the member functions defined in NCCLComm,
+   * we run into an unsolved bug:
+   * undefined reference to `c10d::NCCLComm::getNcclComm()' 
+   */
+  ss << subSep << " TORCH NCCL communicator for current device " << device << " " << subSep << std::endl;
+  std::shared_ptr<c10d::NCCLComm> torchNCCLComm = pg->getNCCLComm();
+  // ncclComm_t ncclComm = torchNCCLComm->getNcclComm();
+  // ncclUniqueId nccUID = torchNCCLComm->getNcclId(); auto ncclUIDString = getNCCLUIDString(nccUID);
+  // ss << subSep << " NCCL communicator for current device " << device << " " << subSep << std::endl;
+  // ss << ncclComm << " with NCCL ID: " << ncclUIDString << std::endl;
 
   logger.log(ss.str());
 }
@@ -523,7 +551,7 @@ int main(int argc, char* argv[]) {
 
   // Analysis MyNCCL
   #ifdef USE_MY_NCCL_AS_COMM_BACKEND
-    analysisMyNCCL(logger, pg);
+    analysisMyNCCL(logger, pg, num_ranks, rank);
   #endif
 
   // finalize distributed environment

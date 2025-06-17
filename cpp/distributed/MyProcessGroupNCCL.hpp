@@ -4,6 +4,7 @@
 #include <torch/csrc/distributed/c10d/Store.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
+#include <torch/csrc/distributed/c10d/NCCLUtils.hpp>
 #include <torch/torch.h>
 
 
@@ -23,6 +24,12 @@ namespace myc10d {
 
         // get the nccl stream w.r.t. the device
         at::cuda::CUDAStream& getNCCLStream(int device = -1);
+
+        // get all nccl comms
+        std::unordered_map<std::string, std::shared_ptr<c10d::NCCLComm>>& getNCCLComms();
+
+        // get the nccl comm w.r.t. the device
+        std::shared_ptr<c10d::NCCLComm> getNCCLComm(int device = -1);
 
         // set the device
         void setDevice(int device) { device_ = device; }
